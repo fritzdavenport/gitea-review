@@ -1,0 +1,328 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# gitea-review: Ephemeral local code review via Gitea
+# Spins up a throwaway Gitea instance for PR review, tears it down when done.
+# All state lives in TMPDIR and a Docker container -- nothing persists.
+
+CONTAINER="gitea-review"
+PORT="${GITEA_PORT:-3000}"
+URL="http://localhost:${PORT}"
+USER="review"
+PASS="review"
+STATE_FILE="${TMPDIR:-/tmp}/gitea-review.env"
+
+# Load ephemeral state if container is running (safe key=value parsing, no eval)
+TOKEN=""
+REPO=""
+if [[ -f "$STATE_FILE" ]]; then
+    while IFS='=' read -r key val; do
+        case "$key" in
+            TOKEN) TOKEN="$val" ;;
+            REPO) REPO="$val" ;;
+        esac
+    done < "$STATE_FILE"
+fi
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# Safe JSON construction via python3
+json_obj() { python3 -c "import json,sys; print(json.dumps(dict(zip(sys.argv[1::2],sys.argv[2::2]))))" "$@"; }
+
+api() {
+    local method="$1" path="$2"
+    shift 2
+    curl -sf -X "$method" \
+        "${URL}/api/v1${path}" \
+        -H "Authorization: token ${TOKEN}" \
+        -H "Content-Type: application/json" \
+        "$@"
+}
+
+ensure_running() {
+    # Already running and configured?
+    if [[ -n "$TOKEN" ]] && curl -sf "${URL}/api/v1/version" &>/dev/null; then
+        return 0
+    fi
+
+    command -v docker &>/dev/null || die "Docker is required."
+    command -v python3 &>/dev/null || die "python3 is required."
+
+    # Check if port is available
+    if curl -sf "http://localhost:${PORT}" &>/dev/null && \
+       ! docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER}$"; then
+        die "Port ${PORT} is already in use. Set GITEA_PORT to use a different port."
+    fi
+
+    # Start container if needed
+    if ! docker ps --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
+        docker rm -f "$CONTAINER" &>/dev/null || true
+        docker run -d \
+            --name "$CONTAINER" \
+            -p "${PORT}:3000" \
+            -e GITEA__database__DB_TYPE=sqlite3 \
+            -e GITEA__server__ROOT_URL="${URL}/" \
+            -e GITEA__server__HTTP_PORT=3001 \
+            -e GITEA__security__INSTALL_LOCK=true \
+            -e GITEA__service__ENABLE_REVERSE_PROXY_AUTHENTICATION=true \
+            -e GITEA__service__ENABLE_REVERSE_PROXY_AUTO_REGISTRATION=true \
+            -e GITEA__security__REVERSE_PROXY_TRUSTED_PROXIES=127.0.0.1/8 \
+            --entrypoint sh \
+            gitea/gitea:latest \
+            -c 'apk add --no-cache caddy >/dev/null 2>&1
+printf ":3000 {\n  reverse_proxy 127.0.0.1:3001 {\n    header_up X-WEBAUTH-USER %s\n  }\n}\n" "'"${USER}"'" > /tmp/Caddyfile
+caddy run --config /tmp/Caddyfile &
+exec /usr/bin/entrypoint' >/dev/null
+
+        # Wait for API (through caddy on 3000 -> gitea on 3001)
+        local retries=20
+        while ! curl -sf "${URL}/api/v1/version" &>/dev/null; do
+            retries=$((retries - 1))
+            [[ $retries -le 0 ]] && die "Gitea did not start. Check: docker logs $CONTAINER"
+            sleep 2
+        done
+    fi
+
+    # Create user + token (idempotent)
+    docker exec -u git "$CONTAINER" \
+        gitea admin user create \
+        --username "$USER" --password "$PASS" \
+        --email "${USER}@localhost" --admin \
+        --must-change-password=false 2>/dev/null || true
+
+    local token_json
+    token_json=$(curl -sf -X POST "${URL}/api/v1/users/${USER}/tokens" \
+        -u "${USER}:${PASS}" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"s'"$(date +%s)"'","scopes":["all"]}') \
+        || die "Failed to create API token."
+    TOKEN=$(echo "$token_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['sha1'])")
+    [[ -n "$TOKEN" ]] || die "Token extraction failed."
+
+    # Derive repo name from git root
+    git rev-parse --show-toplevel &>/dev/null || die "Not inside a git repository."
+    REPO=$(basename "$(git rev-parse --show-toplevel)")
+
+    # Create repo (safe JSON)
+    local repo_json
+    repo_json=$(python3 -c "import json,sys; print(json.dumps({'name':sys.argv[1],'auto_init':False,'default_branch':'main'}))" "$REPO")
+    api POST "/user/repos" -d "$repo_json" >/dev/null 2>&1 || true
+
+    # Add/update git remote
+    local cred_url="http://${USER}:${TOKEN}@localhost:${PORT}/${USER}/${REPO}.git"
+    if git remote get-url gitea &>/dev/null; then
+        git remote set-url gitea "$cred_url"
+    else
+        git remote add gitea "$cred_url"
+    fi
+
+    # Push main
+    git push gitea main 2>/dev/null || echo "Warning: could not push main branch." >&2
+
+    # Save ephemeral state (restricted permissions)
+    (umask 077; cat > "$STATE_FILE" <<EOF
+TOKEN=${TOKEN}
+REPO=${REPO}
+EOF
+)
+}
+
+cmd_start() {
+    local branch="${1:?Usage: gitea-review start <branch> [branch2 ...]}"
+    shift
+
+    ensure_running
+
+    # Push and create PRs for each branch
+    local b result pr_num existing existing_num
+    for b in "$branch" "$@"; do
+        git push gitea "$b" 2>&1 | tail -1 || true
+        sleep 1
+        local pr_json
+        pr_json=$(python3 -c "import json,sys; print(json.dumps({'title':'Review: '+sys.argv[1],'head':sys.argv[1],'base':'main'}))" "$b")
+        result=$(api POST "/repos/${USER}/${REPO}/pulls" -d "$pr_json") || true
+        pr_num=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['number'])" 2>/dev/null) || true
+        if [[ -n "$pr_num" && "$pr_num" != "None" ]]; then
+            echo "PR #${pr_num}: ${b}  ${URL}/${USER}/${REPO}/pulls/${pr_num}"
+        else
+            # Check if PR already exists
+            existing=$(api GET "/repos/${USER}/${REPO}/pulls?state=open&head=${b}" 2>/dev/null) || true
+            existing_num=$(echo "$existing" | python3 -c "import sys,json; prs=json.load(sys.stdin); print(prs[0]['number'] if prs else '')" 2>/dev/null) || true
+            if [[ -n "$existing_num" ]]; then
+                echo "PR #${existing_num}: ${b} (already exists)  ${URL}/${USER}/${REPO}/pulls/${existing_num}"
+            else
+                echo "Failed to create PR for ${b}" >&2
+            fi
+        fi
+    done
+
+    echo ""
+    echo "Review at: ${URL}/${USER}/${REPO}/pulls"
+    open "${URL}/${USER}/${REPO}/pulls" 2>/dev/null \
+        || xdg-open "${URL}/${USER}/${REPO}/pulls" 2>/dev/null || true
+}
+
+cmd_pr_list() {
+    ensure_running
+    local state="${1:-open}"
+    api GET "/repos/${USER}/${REPO}/pulls?state=${state}&limit=50" \
+        | python3 -c "
+import sys, json
+prs = json.load(sys.stdin)
+state = sys.argv[1]
+if not prs:
+    print(f'No {state} PRs.')
+else:
+    for pr in prs:
+        print(f'#{pr[\"number\"]:3d}  {pr[\"state\"]:8s}  {pr[\"head\"][\"label\"]:30s}  {pr[\"title\"]}')
+" "$state"
+}
+
+cmd_pr_push() {
+    ensure_running
+    local branch="${1:?Usage: gitea-review push <branch>}"
+    git push gitea "$branch"
+    echo "Pushed ${branch}."
+}
+
+cmd_comments() {
+    ensure_running
+    local pr_num="${1:?Usage: gitea-review comments <pr#>}"
+
+    # Pipe reviews JSON via stdin to python3 -- never interpolate API data into code
+    api GET "/repos/${USER}/${REPO}/pulls/${pr_num}/reviews" \
+        | python3 -c "
+import json, sys, urllib.request
+
+reviews = json.load(sys.stdin)
+base = sys.argv[1]
+pr = sys.argv[2]
+token = sys.argv[3]
+
+threads = {}
+for review in reviews:
+    rid = review['id']
+    who = review.get('user', {}).get('login', '?')
+    req = urllib.request.Request(
+        f'{base}/pulls/{pr}/reviews/{rid}/comments',
+        headers={'Authorization': f'token {token}'}
+    )
+    try:
+        comments = json.loads(urllib.request.urlopen(req).read())
+    except Exception:
+        continue
+    for c in comments:
+        path = c.get('path', '')
+        line = c.get('line', 0)
+        key = f'{path}:{line}'
+        threads.setdefault(key, []).append({
+            'id': c['id'], 'who': who, 'body': c.get('body', ''),
+            'diff_hunk': c.get('diff_hunk', ''),
+        })
+
+if not threads:
+    print('No review comments.')
+else:
+    for loc, msgs in sorted(threads.items()):
+        print(f'--- {loc} ---')
+        if msgs[0]['diff_hunk']:
+            for hl in msgs[0]['diff_hunk'].splitlines()[-3:]:
+                print(f'  {hl}')
+        for m in msgs:
+            print(f'  [{m[\"id\"]}] {m[\"who\"]}: {m[\"body\"]}')
+        print()
+" "${URL}/api/v1/repos/${USER}/${REPO}" "$pr_num" "$TOKEN"
+}
+
+cmd_reply() {
+    ensure_running
+    local pr_num="${1:?Usage: gitea-review reply <pr#> <path> <line> <message>}"
+    local path="$2" line="$3" message="$4"
+
+    local body
+    body=$(python3 -c "
+import json, sys
+print(json.dumps({
+    'event': 'COMMENT',
+    'body': '',
+    'comments': [{'path': sys.argv[1], 'body': sys.argv[2], 'new_line_num': int(sys.argv[3])}]
+}))
+" "$path" "$message" "$line")
+    api POST "/repos/${USER}/${REPO}/pulls/${pr_num}/reviews" -d "$body" >/dev/null
+    echo "Replied on ${path}:${line}."
+}
+
+cmd_merge() {
+    ensure_running
+    local pr_num="${1:?Usage: gitea-review merge <pr#>}"
+    local style="${2:-squash}"
+
+    local body
+    body=$(python3 -c "import json,sys; print(json.dumps({'Do':sys.argv[1],'delete_branch_after_merge':True}))" "$style")
+    api POST "/repos/${USER}/${REPO}/pulls/${pr_num}/merge" -d "$body" >/dev/null
+    echo "PR #${pr_num} merged (${style})."
+}
+
+cmd_done() {
+    # Tear down
+    docker rm -f "$CONTAINER" &>/dev/null || true
+    git remote remove gitea &>/dev/null || true
+    rm -f "$STATE_FILE"
+    echo "Gitea stopped and cleaned up."
+}
+
+cmd_status() {
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER}$"; then
+        echo "Gitea: running at ${URL}"
+        echo "Repo:  ${REPO:-<none>}"
+        echo "PRs:   ${URL}/${USER}/${REPO}/pulls"
+    else
+        echo "Gitea: not running"
+    fi
+}
+
+cmd_open() {
+    ensure_running
+    local pr_num="${1:-}"
+    local target="${URL}/${USER}/${REPO}"
+    [[ -n "$pr_num" ]] && target="${target}/pulls/${pr_num}"
+    open "$target" 2>/dev/null || xdg-open "$target" 2>/dev/null || echo "$target"
+}
+
+cmd_help() {
+    cat <<'HELP'
+gitea-review - Ephemeral local code review
+
+Start a review session:
+  start <branch> [branch2 ...]   Spin up Gitea, create PRs, open browser
+
+During review:
+  comments <pr#>                 Show review comments (by file:line)
+  reply <pr#> <path> <line> <msg> Reply to a comment
+  push <branch>                  Push updated branch
+  merge <pr#> [style]            Squash merge (styles: squash, merge, rebase)
+  list [state]                   List PRs (default: open)
+  open [pr#]                     Open in browser
+
+Lifecycle:
+  status                         Is Gitea running?
+  done                           Tear down Gitea, clean up
+
+Environment:
+  GITEA_PORT                     Override default port (3000)
+HELP
+}
+
+case "${1:-help}" in
+    start)     shift; cmd_start "$@" ;;
+    list)      shift; cmd_pr_list "$@" ;;
+    push)      shift; cmd_pr_push "$@" ;;
+    comments)  shift; cmd_comments "$@" ;;
+    reply)     shift; cmd_reply "$@" ;;
+    merge)     shift; cmd_merge "$@" ;;
+    done)      cmd_done ;;
+    status)    cmd_status ;;
+    open)      shift; cmd_open "$@" ;;
+    help|--help|-h) cmd_help ;;
+    *)         die "Unknown: $1. Run 'gitea-review help'." ;;
+esac
