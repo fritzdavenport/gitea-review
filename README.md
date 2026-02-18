@@ -1,7 +1,8 @@
 # gitea-review
 
 > [!CAUTION]
-> I did not write this code, though was involved in it's creation process. Make sure you review all scripts and skills prior to installation
+> I did not write this code - though was involved in it's creation process and have fully reviewed all lines.
+> Make sure you review all scripts and skills prior to installation
 
 Ephemeral local code review with a GitHub-like PR interface. Spins up a throwaway [Gitea](https://gitea.io) instance, creates PRs from your branches, and opens the browser for review. Tear it down when you're done -- nothing persists.
 
