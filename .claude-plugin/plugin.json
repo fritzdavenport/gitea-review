@@ -1,0 +1,20 @@
+{
+  "name": "gitea-review",
+  "version": "1.0.0",
+  "description": "Ephemeral local code review with GitHub-like PR interface via throwaway Gitea instances",
+  "author": {
+    "name": "Fritz Davenport",
+    "url": "https://github.com/fritzdavenport"
+  },
+  "repository": "https://github.com/fritzdavenport/gitea-review",
+  "homepage": "https://github.com/fritzdavenport/gitea-review",
+  "license": "MIT",
+  "keywords": [
+    "code-review",
+    "gitea",
+    "pull-request",
+    "local",
+    "ephemeral",
+    "docker"
+  ]
+}
