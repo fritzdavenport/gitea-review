@@ -43,7 +43,7 @@ gitea-review done
 ## How It Works
 
 1. `start` launches an ephemeral Gitea Docker container with a Caddy reverse proxy that auto-logs you in (no password needed)
-2. Creates a `gitea` git remote, pushes your branches, and opens PRs
+2. Creates a `gitea` git remote, pushes your branches, and opens PRs with auto-generated descriptions
 3. You review in the browser at `http://localhost:3000` with full GitHub-like UI (line comments, suggestions, squash merge button)
 4. The agent reads comments via the Gitea API and pushes fixes
 5. `done` removes the container, git remote, and all temp state
@@ -56,6 +56,17 @@ Each repository gets its own isolated Gitea instance:
 - State file: per-repo in `$TMPDIR`
 
 This prevents multiple sessions from interfering with each other when reviewing different repositories simultaneously.
+
+### PR Descriptions
+
+Each PR is automatically created with a thorough description that analyzes your commits and changes:
+
+- Conventional commit type breakdown (feat, fix, test, etc.)
+- File modification count and line change statistics
+- Changed files list (up to 10)
+- Commit history (up to 10)
+
+This gives reviewers immediate context about what changed and why, with no manual work required.
 
 ## Configuration
 

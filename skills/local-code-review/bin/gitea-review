@@ -38,6 +38,15 @@ fi
 # Safe JSON construction via python3
 json_obj() { python3 -c "import json,sys; print(json.dumps(dict(zip(sys.argv[1::2],sys.argv[2::2]))))" "$@"; }
 
+# Generate PR description from branch analysis
+generate_pr_description() {
+    local branch="$1"
+    local base="${2:-main}"
+    local script_dir
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    "${script_dir}/generate-pr-description" "$branch" "$base"
+}
+
 api() {
     local method="$1" path="$2"
     shift 2
@@ -138,12 +147,24 @@ cmd_start() {
     ensure_running
 
     # Push and create PRs for each branch
-    local b result pr_num existing existing_num
+    local b result pr_num existing existing_num pr_desc
     for b in "$branch" "$@"; do
         git push gitea "$b" 2>&1 | tail -1 || true
         sleep 1
+
+        # Generate PR description
+        pr_desc=$(generate_pr_description "$b" "main")
+
         local pr_json
-        pr_json=$(python3 -c "import json,sys; print(json.dumps({'title':'Review: '+sys.argv[1],'head':sys.argv[1],'base':'main'}))" "$b")
+        pr_json=$(python3 -c "
+import json, sys
+print(json.dumps({
+    'title': 'Review: ' + sys.argv[1],
+    'head': sys.argv[1],
+    'base': 'main',
+    'body': sys.argv[2]
+}))
+" "$b" "$pr_desc")
         result=$(api POST "/repos/${USER}/${REPO}/pulls" -d "$pr_json") || true
         pr_num=$(echo "$result" | python3 -c "import sys,json; print(json.load(sys.stdin)['number'])" 2>/dev/null) || true
         if [[ -n "$pr_num" && "$pr_num" != "None" ]]; then
@@ -298,7 +319,8 @@ cmd_help() {
 gitea-review - Ephemeral local code review
 
 Start a review session:
-  start <branch> [branch2 ...]   Spin up Gitea, create PRs, open browser
+  start <branch> [branch2 ...]   Spin up Gitea, create PRs with auto-generated
+                                 descriptions, open browser
 
 During review:
   comments <pr#>                 Show review comments (by file:line)
