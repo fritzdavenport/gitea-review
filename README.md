@@ -79,7 +79,7 @@ This gives reviewers immediate context about what changed and why, with no manua
 | Command | Description |
 |---------|-------------|
 | `start <branch> [...]` | Spin up Gitea, push branches, create PRs, open browser |
-| `comments <pr#>` | Show review comments grouped by file:line |
+| `comments <pr#> [--hide-resolved]` | Show review comments with resolved status |
 | `push <branch>` | Push updated branch |
 | `reply <pr#> <path> <line> <msg>` | Reply to a comment |
 | `merge <pr#> [style]` | Squash merge (styles: squash, merge, rebase) |
@@ -87,6 +87,15 @@ This gives reviewers immediate context about what changed and why, with no manua
 | `open [pr#]` | Open in browser |
 | `status` | Check if Gitea is running |
 | `done` | Tear down Gitea, remove remote, clean up |
+
+### Resolved Comment Tracking
+
+Review comments show their resolved status with `[RESOLVED]` markers. Use `--hide-resolved` to focus on outstanding items:
+
+```bash
+gitea-review comments 1                  # All comments with resolved markers
+gitea-review comments 1 --hide-resolved  # Only unresolved comments
+```
 
 ## License
 

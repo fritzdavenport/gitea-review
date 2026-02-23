@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+"""Format Gitea PR review comments grouped by file:line.
+
+Usage: format-review-comments <api_base> <pr_number> <token> [--hide-resolved]
+
+Reads reviews JSON from stdin, fetches per-review comments via the
+Gitea API, groups them by file:line, and prints a human-readable summary.
+"""
+import json
+import sys
+import urllib.request
+
+
+def main():
+    if len(sys.argv) < 4:
+        print(
+            "Usage: format-review-comments <api_base> <pr#> <token> [--hide-resolved]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    base = sys.argv[1]
+    pr = sys.argv[2]
+    token = sys.argv[3]
+    hide_resolved = "--hide-resolved" in sys.argv[4:]
+
+    reviews = json.load(sys.stdin)
+
+    threads = {}
+    for review in reviews:
+        rid = review["id"]
+        who = review.get("user", {}).get("login", "?")
+        req = urllib.request.Request(
+            f"{base}/pulls/{pr}/reviews/{rid}/comments",
+            headers={"Authorization": f"token {token}"},
+        )
+        try:
+            comments = json.loads(urllib.request.urlopen(req).read())
+        except Exception:
+            continue
+        for c in comments:
+            resolved = c.get("resolved", False)
+
+            if hide_resolved and resolved:
+                continue
+
+            path = c.get("path", "")
+            line = c.get("line", 0)
+            key = f"{path}:{line}"
+            threads.setdefault(key, []).append(
+                {
+                    "id": c["id"],
+                    "who": who,
+                    "body": c.get("body", ""),
+                    "diff_hunk": c.get("diff_hunk", ""),
+                    "resolved": resolved,
+                }
+            )
+
+    if not threads:
+        if hide_resolved:
+            print("No unresolved review comments.")
+        else:
+            print("No review comments.")
+    else:
+        for loc, msgs in sorted(threads.items()):
+            print(f"--- {loc} ---")
+            if msgs[0]["diff_hunk"]:
+                for hl in msgs[0]["diff_hunk"].splitlines()[-3:]:
+                    print(f"  {hl}")
+            for m in msgs:
+                resolved_marker = " [RESOLVED]" if m["resolved"] else ""
+                print(f"  [{m['id']}] {m['who']}: {m['body']}{resolved_marker}")
+            print()
+
+
+if __name__ == "__main__":
+    main()
