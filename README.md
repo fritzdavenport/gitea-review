@@ -48,11 +48,20 @@ gitea-review done
 4. The agent reads comments via the Gitea API and pushes fixes
 5. `done` removes the container, git remote, and all temp state
 
+### Concurrent Sessions
+
+Each repository gets its own isolated Gitea instance:
+- Container name: `gitea-review-${REPO}` (allows concurrent containers)
+- Port: auto-assigned from repo name hash (3000-3999 range), override with `GITEA_PORT`
+- State file: per-repo in `$TMPDIR`
+
+This prevents multiple sessions from interfering with each other when reviewing different repositories simultaneously.
+
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GITEA_PORT` | `3000` | Port for the Gitea web UI |
+| `GITEA_PORT` | Auto-assigned (3000-3999) | Port for the Gitea web UI |
 
 ## Commands
 
