@@ -5,26 +5,35 @@ set -euo pipefail
 # Spins up a throwaway Gitea instance for PR review, tears it down when done.
 # All state lives in TMPDIR and a Docker container -- nothing persists.
 
-CONTAINER="gitea-review"
-PORT="${GITEA_PORT:-3000}"
-URL="http://localhost:${PORT}"
+die() { echo "ERROR: $*" >&2; exit 1; }
+
 USER="review"
 PASS="review"
-STATE_FILE="${TMPDIR:-/tmp}/gitea-review.env"
+
+# Derive repo-specific names to allow concurrent sessions
+git rev-parse --show-toplevel &>/dev/null || die "Not inside a git repository."
+REPO=$(basename "$(git rev-parse --show-toplevel)")
+CONTAINER="gitea-review-${REPO}"
+STATE_FILE="${TMPDIR:-/tmp}/gitea-review-${REPO}.env"
+
+# Auto-assign port based on repo name (hash to 3000-3999 range)
+if [[ -z "${GITEA_PORT:-}" ]]; then
+    REPO_HASH=$(echo -n "$REPO" | cksum | cut -d' ' -f1)
+    PORT=$((3000 + (REPO_HASH % 1000)))
+else
+    PORT="${GITEA_PORT}"
+fi
+URL="http://localhost:${PORT}"
 
 # Load ephemeral state if container is running (safe key=value parsing, no eval)
 TOKEN=""
-REPO=""
 if [[ -f "$STATE_FILE" ]]; then
     while IFS='=' read -r key val; do
         case "$key" in
             TOKEN) TOKEN="$val" ;;
-            REPO) REPO="$val" ;;
         esac
     done < "$STATE_FILE"
 fi
-
-die() { echo "ERROR: $*" >&2; exit 1; }
 
 # Safe JSON construction via python3
 json_obj() { python3 -c "import json,sys; print(json.dumps(dict(zip(sys.argv[1::2],sys.argv[2::2]))))" "$@"; }
@@ -99,10 +108,6 @@ exec /usr/bin/entrypoint' >/dev/null
     TOKEN=$(echo "$token_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['sha1'])")
     [[ -n "$TOKEN" ]] || die "Token extraction failed."
 
-    # Derive repo name from git root
-    git rev-parse --show-toplevel &>/dev/null || die "Not inside a git repository."
-    REPO=$(basename "$(git rev-parse --show-toplevel)")
-
     # Create repo (safe JSON)
     local repo_json
     repo_json=$(python3 -c "import json,sys; print(json.dumps({'name':sys.argv[1],'auto_init':False,'default_branch':'main'}))" "$REPO")
@@ -122,7 +127,6 @@ exec /usr/bin/entrypoint' >/dev/null
     # Save ephemeral state (restricted permissions)
     (umask 077; cat > "$STATE_FILE" <<EOF
 TOKEN=${TOKEN}
-REPO=${REPO}
 EOF
 )
 }
@@ -309,7 +313,7 @@ Lifecycle:
   done                           Tear down Gitea, clean up
 
 Environment:
-  GITEA_PORT                     Override default port (3000)
+  GITEA_PORT                     Override auto-assigned port (3000-3999)
 HELP
 }
 
