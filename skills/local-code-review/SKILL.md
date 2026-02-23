@@ -32,7 +32,9 @@ Ephemeral GitHub-like PR review via a throwaway local Gitea instance. User revie
 
 ## How It Works
 
-Gitea runs as an ephemeral Docker container with a Caddy reverse proxy that auto-logs the user in (no password needed). The script adds a `gitea` remote alongside `origin`, pushes branches there, and creates PRs. The user reviews at `http://localhost:3000` (override with `GITEA_PORT`). When done, `gitea-review done` removes the container, the remote, and all temp state.
+Gitea runs as an ephemeral Docker container with a Caddy reverse proxy that auto-logs the user in (no password needed). The script adds a `gitea` remote alongside `origin`, pushes branches there, and creates PRs. The user reviews at the auto-assigned port (override with `GITEA_PORT`). When done, `gitea-review done` removes the container, the remote, and all temp state.
+
+Each repository gets its own isolated instance (container, port, state file), so multiple sessions can run concurrently without interfering with each other.
 
 ## Workflow
 
@@ -66,4 +68,4 @@ When the user says "address review comments" or "check PR comments":
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `GITEA_PORT` | `3000` | Port for the Gitea web UI |
+| `GITEA_PORT` | Auto-assigned (3000-3999) | Port for the Gitea web UI |
