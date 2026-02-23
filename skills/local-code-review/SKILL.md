@@ -32,9 +32,19 @@ Ephemeral GitHub-like PR review via a throwaway local Gitea instance. User revie
 
 ## How It Works
 
-Gitea runs as an ephemeral Docker container with a Caddy reverse proxy that auto-logs the user in (no password needed). The script adds a `gitea` remote alongside `origin`, pushes branches there, and creates PRs. The user reviews at the auto-assigned port (override with `GITEA_PORT`). When done, `gitea-review done` removes the container, the remote, and all temp state.
+Gitea runs as an ephemeral Docker container with a Caddy reverse proxy that auto-logs the user in (no password needed). The script adds a `gitea` remote alongside `origin`, pushes branches there, and creates PRs with auto-generated descriptions. The user reviews at the auto-assigned port (override with `GITEA_PORT`). When done, `gitea-review done` removes the container, the remote, and all temp state.
 
 Each repository gets its own isolated instance (container, port, state file), so multiple sessions can run concurrently without interfering with each other.
+
+### PR Descriptions
+
+PRs are automatically created with thorough descriptions that include:
+- **Summary** - Conventional commit type breakdown (feat, fix, test, etc.)
+- **Changes** - Files modified count and line change statistics
+- **File list** - Up to 10 changed files with paths
+- **Commit list** - Up to 10 commits with hashes and messages
+
+This gives reviewers immediate context about what changed and why.
 
 ## Workflow
 

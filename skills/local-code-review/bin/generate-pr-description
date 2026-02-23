@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Generate a PR description from branch analysis.
+
+Usage: generate-pr-description <branch> [base]
+
+Analyzes commits and diff stats between a branch and its base,
+then outputs a markdown PR description to stdout.
+"""
+import subprocess
+import sys
+
+
+def run_git(*args):
+    return subprocess.check_output(
+        ["git", *args], text=True, stderr=subprocess.DEVNULL
+    ).strip()
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: generate-pr-description <branch> [base]", file=sys.stderr)
+        sys.exit(1)
+
+    branch = sys.argv[1]
+    base = sys.argv[2] if len(sys.argv) > 2 else "main"
+
+    # Get merge base
+    try:
+        merge_base = run_git("merge-base", base, branch)
+    except subprocess.CalledProcessError:
+        print(f"## Summary\n\nChanges in branch `{branch}`")
+        return
+
+    # Read commit log
+    log_output = run_git("log", f"{merge_base}..{branch}", "--format=%h %s")
+    commits = [line for line in log_output.splitlines() if line.strip()]
+
+    # Get diff stats
+    try:
+        stats = run_git("diff", "--stat", f"{merge_base}...{branch}")
+    except subprocess.CalledProcessError:
+        stats = ""
+
+    # Parse stats for file changes
+    files_changed = []
+    insertions = deletions = 0
+    for line in stats.split("\n"):
+        if "|" in line:
+            parts = line.split("|")
+            if len(parts) == 2:
+                files_changed.append(parts[0].strip())
+        elif "insertion" in line or "deletion" in line:
+            for p in line.split(","):
+                if "insertion" in p:
+                    insertions = int(p.split()[0])
+                if "deletion" in p:
+                    deletions = int(p.split()[0])
+
+    # Build description
+    desc = ["## Summary", ""]
+
+    # Extract commit types (conventional commits)
+    commit_types = {}
+    for commit in commits:
+        parts = commit.split(" ", 1)
+        if len(parts) > 1:
+            msg = parts[1]
+            if "(" in msg and ")" in msg:
+                ctype = msg.split("(")[0].strip()
+                commit_types[ctype] = commit_types.get(ctype, 0) + 1
+
+    if commit_types:
+        type_desc = ", ".join(
+            f"{k} ({v})" for k, v in sorted(commit_types.items())
+        )
+        desc.append(f"Changes include: {type_desc}")
+    else:
+        desc.append(f"{len(commits)} commit(s) in this branch")
+
+    desc += ["", "## Changes", ""]
+
+    if files_changed:
+        desc.append(f"**Files modified:** {len(files_changed)}")
+        desc.append(f"**Lines changed:** +{insertions} -{deletions}")
+        desc.append("")
+        for f in files_changed[:10]:
+            desc.append(f"- `{f}`")
+        if len(files_changed) > 10:
+            desc.append(f"- ... and {len(files_changed) - 10} more files")
+        desc.append("")
+
+    desc += ["## Commits", ""]
+    for commit in commits[:10]:
+        desc.append(f"- {commit}")
+    if len(commits) > 10:
+        desc.append(f"- ... and {len(commits) - 10} more commits")
+
+    print("\n".join(desc))
+
+
+if __name__ == "__main__":
+    main()
