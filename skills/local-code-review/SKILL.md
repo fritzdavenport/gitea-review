@@ -12,7 +12,7 @@ Ephemeral GitHub-like PR review via a throwaway local Gitea instance. User revie
 | Command | Description |
 |---------|-------------|
 | `gitea-review start <branch> [...]` | Spin up Gitea, push branches, create PRs, open browser |
-| `gitea-review comments <pr#>` | Fetch review comments grouped by file:line |
+| `gitea-review comments <pr#> [--hide-resolved]` | Fetch review comments with resolved status |
 | `gitea-review push <branch>` | Push fixes to existing PR |
 | `gitea-review reply <pr#> <path> <line> <msg>` | Reply to a comment |
 | `gitea-review merge <pr#>` | Squash merge PR |
@@ -63,7 +63,7 @@ gitea-review done                     # Tear down
 
 When the user says "address review comments" or "check PR comments":
 
-1. `gitea-review comments <pr#>` -- each comment shows `[id] reviewer: message` at `file:line` with diff context
+1. `gitea-review comments <pr#>` -- each comment shows `[id] reviewer: message` at `file:line` with diff context. Resolved comments are marked with `[RESOLVED]`. Use `--hide-resolved` to filter them out.
 2. Make the requested code changes
 3. `gitea-review push <branch>`
 4. `gitea-review reply <pr#> <path> <line> "Fixed -- <what you did>"`
