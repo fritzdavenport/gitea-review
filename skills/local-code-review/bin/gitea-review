@@ -234,7 +234,7 @@ import json, sys
 print(json.dumps({
     'event': 'COMMENT',
     'body': '',
-    'comments': [{'path': sys.argv[1], 'body': sys.argv[2], 'new_line_num': int(sys.argv[3])}]
+    'comments': [{'path': sys.argv[1], 'body': sys.argv[2], 'new_position': int(sys.argv[3])}]
 }))
 " "$path" "$message" "$line")
     api POST "/repos/${USER}/${REPO}/pulls/${pr_num}/reviews" -d "$body" >/dev/null
