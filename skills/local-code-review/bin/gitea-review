@@ -9,6 +9,8 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 USER="review"
 PASS="review"
+AGENT_USER="agent"
+AGENT_PASS="agent"
 
 # Derive repo-specific names to allow concurrent sessions
 git rev-parse --show-toplevel &>/dev/null || die "Not inside a git repository."
@@ -27,10 +29,12 @@ URL="http://localhost:${PORT}"
 
 # Load ephemeral state if container is running (safe key=value parsing, no eval)
 TOKEN=""
+AGENT_TOKEN=""
 if [[ -f "$STATE_FILE" ]]; then
     while IFS='=' read -r key val; do
         case "$key" in
             TOKEN) TOKEN="$val" ;;
+            AGENT_TOKEN) AGENT_TOKEN="$val" ;;
         esac
     done < "$STATE_FILE"
 fi
@@ -57,9 +61,45 @@ api() {
         "$@"
 }
 
+ensure_agent() {
+    # Create agent user (non-admin, idempotent)
+    docker exec -u git "$CONTAINER" \
+        gitea admin user create \
+        --username "$AGENT_USER" --password "$AGENT_PASS" \
+        --email "${AGENT_USER}@localhost" \
+        --must-change-password=false 2>/dev/null || true
+
+    # Create agent token
+    local agent_token_json
+    agent_token_json=$(curl -sf -X POST "${URL}/api/v1/users/${AGENT_USER}/tokens" \
+        -u "${AGENT_USER}:${AGENT_PASS}" \
+        -H "Content-Type: application/json" \
+        -d '{"name":"s'"$(date +%s)"'","scopes":["all"]}') || true
+    AGENT_TOKEN=$(echo "$agent_token_json" | python3 -c "import sys,json; print(json.load(sys.stdin)['sha1'])" 2>/dev/null) || true
+
+    if [[ -z "$AGENT_TOKEN" ]]; then
+        echo "Warning: failed to create agent token." >&2
+        return
+    fi
+
+    # Grant agent write access to repo
+    api POST "/repos/${USER}/${REPO}/collaborators/${AGENT_USER}" \
+        -d '{"permission":"write"}' >/dev/null 2>&1 || true
+}
+
 ensure_running() {
     # Already running and configured?
     if [[ -n "$TOKEN" ]] && curl -sf "${URL}/api/v1/version" &>/dev/null; then
+        # Upgrade path: create agent if missing from older session
+        if [[ -z "$AGENT_TOKEN" ]]; then
+            ensure_agent
+            # Re-save state with agent token
+            (umask 077; cat > "$STATE_FILE" <<EOF
+TOKEN=${TOKEN}
+AGENT_TOKEN=${AGENT_TOKEN}
+EOF
+)
+        fi
         return 0
     fi
 
@@ -133,9 +173,13 @@ exec /usr/bin/entrypoint' >/dev/null
     # Push main
     git push gitea main 2>/dev/null || echo "Warning: could not push main branch." >&2
 
+    # Create agent user for AI replies
+    ensure_agent
+
     # Save ephemeral state (restricted permissions)
     (umask 077; cat > "$STATE_FILE" <<EOF
 TOKEN=${TOKEN}
+AGENT_TOKEN=${AGENT_TOKEN}
 EOF
 )
 }
@@ -229,6 +273,10 @@ cmd_reply() {
     local path="$2" line="$3" message="$4"
 
     [[ "$line" =~ ^[0-9]+$ ]] || die "Line must be a positive integer, got: ${line:-<empty>}"
+    [[ -n "$AGENT_TOKEN" ]] || die "Agent token not available. Run 'gitea-review done' and restart."
+
+    # Shadow global TOKEN so api() authenticates as agent
+    local TOKEN="$AGENT_TOKEN"
 
     local body
     body=$(python3 -c "
