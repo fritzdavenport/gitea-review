@@ -45,7 +45,7 @@ def main():
                 continue
 
             path = c.get("path", "")
-            line = c.get("line", 0)
+            line = c.get("position", 0)
             key = f"{path}:{line}"
             threads.setdefault(key, []).append(
                 {

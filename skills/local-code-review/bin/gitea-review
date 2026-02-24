@@ -228,13 +228,15 @@ cmd_reply() {
     local pr_num="${1:?Usage: gitea-review reply <pr#> <path> <line> <message>}"
     local path="$2" line="$3" message="$4"
 
+    [[ "$line" =~ ^[0-9]+$ ]] || die "Line must be a positive integer, got: ${line:-<empty>}"
+
     local body
     body=$(python3 -c "
 import json, sys
 print(json.dumps({
     'event': 'COMMENT',
     'body': '',
-    'comments': [{'path': sys.argv[1], 'body': sys.argv[2], 'new_line_num': int(sys.argv[3])}]
+    'comments': [{'path': sys.argv[1], 'body': sys.argv[2], 'new_position': int(sys.argv[3])}]
 }))
 " "$path" "$message" "$line")
     api POST "/repos/${USER}/${REPO}/pulls/${pr_num}/reviews" -d "$body" >/dev/null
