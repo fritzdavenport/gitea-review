@@ -228,6 +228,8 @@ cmd_reply() {
     local pr_num="${1:?Usage: gitea-review reply <pr#> <path> <line> <message>}"
     local path="$2" line="$3" message="$4"
 
+    [[ "$line" =~ ^[0-9]+$ ]] || die "Line must be a positive integer, got: ${line:-<empty>}"
+
     local body
     body=$(python3 -c "
 import json, sys
