@@ -14,7 +14,8 @@ AGENT_PASS="agent"
 
 # Derive repo-specific names to allow concurrent sessions
 git rev-parse --show-toplevel &>/dev/null || die "Not inside a git repository."
-REPO=$(basename "$(git rev-parse --show-toplevel)")
+GIT_COMMON_DIR=$(git rev-parse --git-common-dir)
+REPO=$(basename "$(cd "$GIT_COMMON_DIR/.." && pwd -P)")
 CONTAINER="gitea-review-${REPO}"
 STATE_FILE="${TMPDIR:-/tmp}/gitea-review-${REPO}.env"
 
